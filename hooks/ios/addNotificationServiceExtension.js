@@ -2,11 +2,25 @@
 
 const path = require('path');
 const fs = require('fs');
-const xcode = require('xcode');
 const { ConfigParser } = require('cordova-common');
 
 const NSE_TARGET_NAME = 'NotificationService';
 const NSE_SOURCE_FILES = ['NotificationService.swift', 'Info.plist'];
+
+// xcode is a dependency of cordova-ios, not this plugin.
+// We find it at runtime from the Cordova project's node_modules because the
+// plugin's own node_modules are NOT copied into platforms/plugins/.
+function requireXcode(projectRoot) {
+    const candidates = [
+        path.resolve(projectRoot, 'node_modules', 'xcode'),
+        path.resolve(projectRoot, 'node_modules', 'cordova-ios', 'node_modules', 'xcode'),
+        'xcode',
+    ];
+    for (const p of candidates) {
+        try { return require(p); } catch (_) {}
+    }
+    return null;
+}
 
 module.exports = function (context) {
     const platforms = context.opts.platforms || (context.opts.cordova && context.opts.cordova.platforms) || [];
@@ -15,6 +29,12 @@ module.exports = function (context) {
     const projectRoot = context.opts.cordova && context.opts.cordova.project
         ? context.opts.cordova.project.root
         : context.opts.projectRoot;
+
+    const xcode = requireXcode(projectRoot);
+    if (!xcode) {
+        console.warn('FCM_NSE: xcode module not found — skipping NotificationService extension setup.');
+        return;
+    }
 
     const configPath = path.join(projectRoot, 'config.xml');
     const configParser = new ConfigParser(configPath);
@@ -90,28 +110,13 @@ module.exports = function (context) {
     proj.addSourceFile(swiftPath, { target: nseTarget.uuid });
     proj.addResourceFile(plistPath, { target: nseTarget.uuid });
 
-    // Build settings for both Debug and Release
+    // Apply build settings to the NSE target's configurations
     const buildConfigs = proj.pbxXCBuildConfigurationSection();
     Object.keys(buildConfigs).forEach(key => {
         const config = buildConfigs[key];
         if (typeof config !== 'object' || !config.buildSettings) return;
-
-        // Only touch configurations that belong to the NSE target
-        const parentUUIDs = Object.values(proj.pbxXCConfigurationListSection() || {})
-            .filter(cl => cl && cl.buildConfigurations)
-            .flatMap(cl => cl.buildConfigurations.map(bc => bc.value || bc));
-
-        if (!parentUUIDs.includes(key)) return;
-
-        // Set only if this config is associated with our new target
-        // The xcode package links configs to the target via the configurationList — filter by name heuristic
-        const name = config.name || '';
-        if (!['Debug', 'Release'].includes(name)) return;
-
-        // Confirm it's for our target by checking PRODUCT_NAME or PRODUCT_BUNDLE_IDENTIFIER
         const pb = config.buildSettings;
         if (pb.PRODUCT_NAME !== `"${NSE_TARGET_NAME}"` && pb.PRODUCT_NAME !== NSE_TARGET_NAME) return;
-
         pb.SWIFT_VERSION = '5.0';
         pb.IPHONEOS_DEPLOYMENT_TARGET = '14.0';
         pb.PRODUCT_BUNDLE_IDENTIFIER = `"${nseBundleId}"`;

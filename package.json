@@ -18,7 +18,6 @@
     "capacitor:update:after": "node build-actions/capacitor_hooks_update_after.js"
   },
   "dependencies": {
-    "adm-zip": "0.5.12",
-    "xcode": "^3.0.1"
+    "adm-zip": "0.5.12"
   }
 }
