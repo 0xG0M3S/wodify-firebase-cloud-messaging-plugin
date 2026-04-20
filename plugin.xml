@@ -45,6 +45,7 @@
 
     <!-- Hooks -->
     <hook type="after_prepare" src="hooks/ios/iOSCopyPreferences.js" />
+    <hook type="after_prepare" src="hooks/ios/addNotificationServiceExtension.js" />
 
     <podspec>
         <config>

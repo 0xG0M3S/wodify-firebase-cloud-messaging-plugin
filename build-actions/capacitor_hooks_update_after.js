@@ -20,6 +20,7 @@ if (platform == 'android') {
     updateCapacitorConfig(iosCapacitorConfig);
     copySounds(iosResDir, webDirPath, platform);
     updateAppDelegate(iosAppDelegateDir);
+    addNotificationServiceExtension();
 }
 
 function fixAndroidKaptGradleCapacitor() {
@@ -236,4 +237,94 @@ function updateAppDelegate(filePath) {
     fs.writeFileSync(filePath, content, 'utf8');
     console.log('\t[SUCCESS] AppDelegate.swift updated successfully.');
 
+}
+
+function addNotificationServiceExtension() {
+    const xcode = require('xcode');
+
+    const NSE_TARGET_NAME = 'NotificationService';
+    const NSE_SOURCE_FILES = ['NotificationService.swift', 'Info.plist'];
+
+    // Bundle ID lives in the root capacitor.config.json as appId
+    let bundleId;
+    const capConfigPath = path.resolve(projectDirPath, 'capacitor.config.json');
+    try {
+        bundleId = JSON.parse(fs.readFileSync(capConfigPath, 'utf8')).appId;
+    } catch (e) {
+        console.error('\t[ERROR] Could not read capacitor.config.json for bundle ID:', e.message);
+        return;
+    }
+
+    if (!bundleId) {
+        console.warn('\t[WARNING] appId missing from capacitor.config.json — skipping NSE setup.');
+        return;
+    }
+
+    // Capacitor Xcode project: ios/App/App.xcodeproj
+    const pbxprojPath = path.resolve(projectDirPath, 'ios', 'App', 'App.xcodeproj', 'project.pbxproj');
+    if (!fs.existsSync(pbxprojPath)) {
+        console.warn('\t[WARNING] Xcode project not found at:', pbxprojPath, '— skipping NSE setup.');
+        return;
+    }
+
+    const proj = xcode.project(pbxprojPath);
+    proj.parseSync();
+
+    // Idempotency: skip if target already exists
+    const nativeTargets = proj.pbxNativeTargetSection();
+    const alreadyExists = Object.values(nativeTargets).some(
+        t => t && (t.name === NSE_TARGET_NAME || t.name === `"${NSE_TARGET_NAME}"`)
+    );
+    if (alreadyExists) {
+        console.log('\t[SKIPPED] NotificationService target already present.');
+        return;
+    }
+
+    // Copy NSE files into ios/App/App/NotificationService/
+    // __dirname is <plugin-root>/build-actions/, so ../src/ios/NotificationService/ is the plugin source
+    const nseSrcDir = path.resolve(__dirname, '..', 'src', 'ios', 'NotificationService');
+    const nseDstDir = path.resolve(projectDirPath, 'ios', 'App', 'App', NSE_TARGET_NAME);
+    if (!fs.existsSync(nseDstDir)) {
+        fs.mkdirSync(nseDstDir, { recursive: true });
+    }
+
+    for (const file of NSE_SOURCE_FILES) {
+        const src = path.join(nseSrcDir, file);
+        const dst = path.join(nseDstDir, file);
+        if (!fs.existsSync(src)) {
+            console.error('\t[ERROR] NSE source file missing:', src);
+            return;
+        }
+        fs.copyFileSync(src, dst);
+    }
+
+    const nseBundleId = `${bundleId}.${NSE_TARGET_NAME}`;
+
+    // Add app extension target
+    const nseTarget = proj.addTarget(NSE_TARGET_NAME, 'app_extension', NSE_TARGET_NAME, nseBundleId);
+    if (!nseTarget) {
+        console.error('\t[ERROR] Failed to add NSE target to Xcode project.');
+        return;
+    }
+
+    // Paths are relative to the .xcodeproj parent (ios/App/)
+    proj.addSourceFile(`App/${NSE_TARGET_NAME}/NotificationService.swift`, { target: nseTarget.uuid });
+    proj.addResourceFile(`App/${NSE_TARGET_NAME}/Info.plist`, { target: nseTarget.uuid });
+
+    // Apply build settings to the NSE target's configurations
+    const buildConfigs = proj.pbxXCBuildConfigurationSection();
+    Object.keys(buildConfigs).forEach(key => {
+        const config = buildConfigs[key];
+        if (typeof config !== 'object' || !config.buildSettings) return;
+        const pb = config.buildSettings;
+        if (pb.PRODUCT_NAME !== `"${NSE_TARGET_NAME}"` && pb.PRODUCT_NAME !== NSE_TARGET_NAME) return;
+        pb.SWIFT_VERSION = '5.0';
+        pb.IPHONEOS_DEPLOYMENT_TARGET = '14.0';
+        pb.PRODUCT_BUNDLE_IDENTIFIER = `"${nseBundleId}"`;
+        pb.TARGETED_DEVICE_FAMILY = '"1,2"';
+        pb.CODE_SIGN_ENTITLEMENTS = '';
+    });
+
+    proj.writeSync();
+    console.log(`\t[SUCCESS] NotificationService extension added (bundle ID: ${nseBundleId}).`);
 }
