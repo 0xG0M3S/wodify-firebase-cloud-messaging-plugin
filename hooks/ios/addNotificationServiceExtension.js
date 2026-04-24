@@ -22,6 +22,52 @@ function requireXcode(projectRoot) {
     return null;
 }
 
+function findMainTargetUuid(proj, appName) {
+    const nativeTargets = proj.pbxNativeTargetSection();
+    for (const [uuid, target] of Object.entries(nativeTargets)) {
+        if (!target || typeof target !== 'object' || uuid.endsWith('_comment')) continue;
+        const name = target.name && target.name.replace(/^"(.*)"$/, '$1');
+        if (name === appName) return uuid;
+    }
+    return null;
+}
+
+function addEmbedExtensionsPhase(proj, mainTargetUuid, nseTargetUuid) {
+    // Build file that references the NSE .appex product
+    const nseNativeTarget = proj.pbxNativeTargetSection()[nseTargetUuid];
+    const productRefUuid = nseNativeTarget.productReference;
+
+    const buildFileUuid = proj.generateUuid();
+    proj.pbxBuildFileSection()[buildFileUuid] = {
+        isa: 'PBXBuildFile',
+        fileRef: productRefUuid,
+        fileRef_comment: `${NSE_TARGET_NAME}.appex`,
+        settings: { ATTRIBUTES: ['RemoveHeadersOnCopy'] },
+    };
+    proj.pbxBuildFileSection()[`${buildFileUuid}_comment`] = `${NSE_TARGET_NAME}.appex in Embed App Extensions`;
+
+    // PBXCopyFilesBuildPhase with dstSubfolderSpec=13 (Plug-ins)
+    const phaseUuid = proj.generateUuid();
+    const copyFilesSection = proj.hash.project.objects['PBXCopyFilesBuildPhase'] =
+        proj.hash.project.objects['PBXCopyFilesBuildPhase'] || {};
+
+    copyFilesSection[phaseUuid] = {
+        isa: 'PBXCopyFilesBuildPhase',
+        buildActionMask: '2147483647',
+        dstPath: '""',
+        dstSubfolderSpec: 13,
+        files: [{ value: buildFileUuid, comment: `${NSE_TARGET_NAME}.appex in Embed App Extensions` }],
+        name: '"Embed App Extensions"',
+        runOnlyForDeploymentPostprocessing: 0,
+    };
+    copyFilesSection[`${phaseUuid}_comment`] = 'Embed App Extensions';
+
+    // Attach phase to the main app target
+    const mainTarget = proj.pbxNativeTargetSection()[mainTargetUuid];
+    if (!mainTarget.buildPhases) mainTarget.buildPhases = [];
+    mainTarget.buildPhases.push({ value: phaseUuid, comment: 'Embed App Extensions' });
+}
+
 module.exports = function (context) {
     const platforms = context.opts.platforms || (context.opts.cordova && context.opts.cordova.platforms) || [];
     if (!platforms.includes('ios') && platforms.length > 0) return;
@@ -123,6 +169,17 @@ module.exports = function (context) {
         pb.TARGETED_DEVICE_FAMILY = '"1,2"';
         pb.CODE_SIGN_ENTITLEMENTS = '';
     });
+
+    // Wire NSE into the main app target:
+    // 1. Target dependency so Xcode builds the NSE before the main app
+    // 2. Embed App Extensions phase so the .appex is copied into Wodify.app/PlugIns/
+    const mainTargetUuid = findMainTargetUuid(proj, appName);
+    if (mainTargetUuid) {
+        proj.addTargetDependency(mainTargetUuid, [nseTarget.uuid]);
+        addEmbedExtensionsPhase(proj, mainTargetUuid, nseTarget.uuid);
+    } else {
+        console.warn(`FCM_NSE: Could not find main target '${appName}' — extension will not be embedded.`);
+    }
 
     proj.writeSync();
     console.log(`FCM_NSE: NotificationService extension added successfully (bundle ID: ${nseBundleId}).`);
