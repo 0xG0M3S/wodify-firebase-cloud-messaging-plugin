@@ -1,5 +1,5 @@
 {
-  "name": "com.outsystems.firebase.cloudmessaging",
+  "name": "com.wodify.firebase.cloudmessaging",
   "version": "2.5.3",
   "description": "Outsystems plugin for Firebase Cloud Messaging",
   "keywords": [
@@ -8,7 +8,7 @@
     "cordova-android"
   ],
   "cordova": {
-    "id": "com.outsystems.firebase.cloudmessaging",
+    "id": "com.wodify.firebase.cloudmessaging",
     "platforms": [
       "ios",
       "android"
