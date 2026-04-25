@@ -69,53 +69,76 @@ function addEmbedExtensionsPhase(proj, mainTargetUuid, nseTargetUuid) {
 // Add the NSE to every .xcscheme in the project so it gets compiled during
 // xcodebuild -scheme <Name> archive. Target dependencies alone are not enough
 // when Xcode uses a named scheme for archiving.
+// Schemes can live inside the .xcodeproj or the .xcworkspace (CocoaPods puts
+// them in the workspace), so we search both.
 function addNSEToSchemes(iosPlatformPath, xcodeprojName, nseTargetUuid) {
-    const schemeDir = path.join(iosPlatformPath, xcodeprojName, 'xcshareddata', 'xcschemes');
-    if (!fs.existsSync(schemeDir)) {
-        console.warn('FCM_NSE: No xcschemes directory found — NSE may not be compiled during archive.');
-        return;
-    }
+    const entries = fs.readdirSync(iosPlatformPath);
+    const xcworkspaceName = entries.find(e => e.endsWith('.xcworkspace'));
 
-    const schemeFiles = fs.readdirSync(schemeDir).filter(f => f.endsWith('.xcscheme'));
-    if (schemeFiles.length === 0) {
-        console.warn('FCM_NSE: No .xcscheme files found.');
-        return;
-    }
+    const schemeDirs = [
+        path.join(iosPlatformPath, xcodeprojName, 'xcshareddata', 'xcschemes'),
+        xcworkspaceName
+            ? path.join(iosPlatformPath, xcworkspaceName, 'xcshareddata', 'xcschemes')
+            : null,
+    ].filter(Boolean);
 
-    for (const schemeFile of schemeFiles) {
-        const schemePath = path.join(schemeDir, schemeFile);
-        let content = fs.readFileSync(schemePath, 'utf8');
+    console.log(`FCM_NSE: Searching for xcschemes in: ${schemeDirs.join(', ')}`);
 
-        if (content.includes(nseTargetUuid)) {
-            console.log(`FCM_NSE: NSE already in scheme ${schemeFile} — skipping.`);
+    let patchedAny = false;
+
+    for (const schemeDir of schemeDirs) {
+        if (!fs.existsSync(schemeDir)) {
+            console.log(`FCM_NSE: xcschemes directory not found: ${schemeDir}`);
             continue;
         }
 
-        const nseEntry = [
-            '      <BuildActionEntry',
-            '         buildForTesting = "YES"',
-            '         buildForRunning = "YES"',
-            '         buildForProfiling = "YES"',
-            '         buildForArchiving = "YES"',
-            '         buildForAnalyzing = "YES">',
-            '         <BuildableReference',
-            '            BuildableIdentifier = "primary"',
-            `            BlueprintIdentifier = "${nseTargetUuid}"`,
-            `            BuildableName = "${NSE_TARGET_NAME}.appex"`,
-            `            BlueprintName = "${NSE_TARGET_NAME}"`,
-            `            ReferencedContainer = "container:${xcodeprojName}">`,
-            '         </BuildableReference>',
-            '      </BuildActionEntry>',
-        ].join('\n');
-
-        if (!content.includes('</BuildActionEntries>')) {
-            console.warn(`FCM_NSE: Could not find </BuildActionEntries> in ${schemeFile} — skipping scheme patch.`);
+        const schemeFiles = fs.readdirSync(schemeDir).filter(f => f.endsWith('.xcscheme'));
+        if (schemeFiles.length === 0) {
+            console.log(`FCM_NSE: No .xcscheme files in ${schemeDir}`);
             continue;
         }
 
-        content = content.replace('</BuildActionEntries>', `${nseEntry}\n   </BuildActionEntries>`);
-        fs.writeFileSync(schemePath, content, 'utf8');
-        console.log(`FCM_NSE: Added NSE to scheme ${schemeFile}.`);
+        for (const schemeFile of schemeFiles) {
+            const schemePath = path.join(schemeDir, schemeFile);
+            let content = fs.readFileSync(schemePath, 'utf8');
+
+            if (content.includes(nseTargetUuid)) {
+                console.log(`FCM_NSE: NSE already in scheme ${schemeFile} — skipping.`);
+                patchedAny = true;
+                continue;
+            }
+
+            const nseEntry = [
+                '      <BuildActionEntry',
+                '         buildForTesting = "YES"',
+                '         buildForRunning = "YES"',
+                '         buildForProfiling = "YES"',
+                '         buildForArchiving = "YES"',
+                '         buildForAnalyzing = "YES">',
+                '         <BuildableReference',
+                '            BuildableIdentifier = "primary"',
+                `            BlueprintIdentifier = "${nseTargetUuid}"`,
+                `            BuildableName = "${NSE_TARGET_NAME}.appex"`,
+                `            BlueprintName = "${NSE_TARGET_NAME}"`,
+                `            ReferencedContainer = "container:${xcodeprojName}">`,
+                '         </BuildableReference>',
+                '      </BuildActionEntry>',
+            ].join('\n');
+
+            if (!content.includes('</BuildActionEntries>')) {
+                console.log(`FCM_NSE: Could not find </BuildActionEntries> in ${schemeFile} — skipping.`);
+                continue;
+            }
+
+            content = content.replace('</BuildActionEntries>', `${nseEntry}\n   </BuildActionEntries>`);
+            fs.writeFileSync(schemePath, content, 'utf8');
+            console.log(`FCM_NSE: Added NSE to scheme ${schemeFile}.`);
+            patchedAny = true;
+        }
+    }
+
+    if (!patchedAny) {
+        console.log('FCM_NSE: WARNING — could not patch any .xcscheme file. NSE may not compile during archive.');
     }
 }
 
