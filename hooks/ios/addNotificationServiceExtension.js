@@ -183,6 +183,7 @@ module.exports = function (context) {
     }
 
     const pbxprojPath = path.join(iosPlatformPath, xcodeprojName, 'project.pbxproj');
+    console.log(`FCM_NSE: Modifying Xcode project at ${pbxprojPath} to add NotificationService extension...`);
     const proj = xcode.project(pbxprojPath);
     proj.parseSync();
 
@@ -255,7 +256,8 @@ module.exports = function (context) {
         console.warn(`FCM_NSE: Could not find main target '${appName}' — extension will not be embedded.`);
     }
 
-    proj.writeSync();
+    //proj.writeSync();
+    fs.writeFileSync(pbxprojPath, proj.writeSync());
 
     // Also patch the .xcscheme so the NSE target is compiled during
     // `xcodebuild -scheme <Name> archive` (scheme-based builds only compile
