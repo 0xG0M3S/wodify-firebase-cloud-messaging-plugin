@@ -33,7 +33,6 @@ function findMainTargetUuid(proj, appName) {
 }
 
 function addEmbedExtensionsPhase(proj, mainTargetUuid, nseTargetUuid) {
-    // Build file that references the NSE .appex product
     const nseNativeTarget = proj.pbxNativeTargetSection()[nseTargetUuid];
     const productRefUuid = nseNativeTarget.productReference;
 
@@ -62,10 +61,62 @@ function addEmbedExtensionsPhase(proj, mainTargetUuid, nseTargetUuid) {
     };
     copyFilesSection[`${phaseUuid}_comment`] = 'Embed App Extensions';
 
-    // Attach phase to the main app target
     const mainTarget = proj.pbxNativeTargetSection()[mainTargetUuid];
     if (!mainTarget.buildPhases) mainTarget.buildPhases = [];
     mainTarget.buildPhases.push({ value: phaseUuid, comment: 'Embed App Extensions' });
+}
+
+// Add the NSE to every .xcscheme in the project so it gets compiled during
+// xcodebuild -scheme <Name> archive. Target dependencies alone are not enough
+// when Xcode uses a named scheme for archiving.
+function addNSEToSchemes(iosPlatformPath, xcodeprojName, nseTargetUuid) {
+    const schemeDir = path.join(iosPlatformPath, xcodeprojName, 'xcshareddata', 'xcschemes');
+    if (!fs.existsSync(schemeDir)) {
+        console.warn('FCM_NSE: No xcschemes directory found — NSE may not be compiled during archive.');
+        return;
+    }
+
+    const schemeFiles = fs.readdirSync(schemeDir).filter(f => f.endsWith('.xcscheme'));
+    if (schemeFiles.length === 0) {
+        console.warn('FCM_NSE: No .xcscheme files found.');
+        return;
+    }
+
+    for (const schemeFile of schemeFiles) {
+        const schemePath = path.join(schemeDir, schemeFile);
+        let content = fs.readFileSync(schemePath, 'utf8');
+
+        if (content.includes(nseTargetUuid)) {
+            console.log(`FCM_NSE: NSE already in scheme ${schemeFile} — skipping.`);
+            continue;
+        }
+
+        const nseEntry = [
+            '      <BuildActionEntry',
+            '         buildForTesting = "YES"',
+            '         buildForRunning = "YES"',
+            '         buildForProfiling = "YES"',
+            '         buildForArchiving = "YES"',
+            '         buildForAnalyzing = "YES">',
+            '         <BuildableReference',
+            '            BuildableIdentifier = "primary"',
+            `            BlueprintIdentifier = "${nseTargetUuid}"`,
+            `            BuildableName = "${NSE_TARGET_NAME}.appex"`,
+            `            BlueprintName = "${NSE_TARGET_NAME}"`,
+            `            ReferencedContainer = "container:${xcodeprojName}">`,
+            '         </BuildableReference>',
+            '      </BuildActionEntry>',
+        ].join('\n');
+
+        if (!content.includes('</BuildActionEntries>')) {
+            console.warn(`FCM_NSE: Could not find </BuildActionEntries> in ${schemeFile} — skipping scheme patch.`);
+            continue;
+        }
+
+        content = content.replace('</BuildActionEntries>', `${nseEntry}\n   </BuildActionEntries>`);
+        fs.writeFileSync(schemePath, content, 'utf8');
+        console.log(`FCM_NSE: Added NSE to scheme ${schemeFile}.`);
+    }
 }
 
 module.exports = function (context) {
@@ -182,5 +233,11 @@ module.exports = function (context) {
     }
 
     proj.writeSync();
+
+    // Also patch the .xcscheme so the NSE target is compiled during
+    // `xcodebuild -scheme <Name> archive` (scheme-based builds only compile
+    // targets listed in the scheme's BuildAction).
+    addNSEToSchemes(iosPlatformPath, xcodeprojName, nseTarget.uuid);
+
     console.log(`FCM_NSE: NotificationService extension added successfully (bundle ID: ${nseBundleId}).`);
 };
